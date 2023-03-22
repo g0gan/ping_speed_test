@@ -1,134 +1,84 @@
-import subprocess
-import sys
-import time
-import codecs
-#from PyQt5.QtCore import QTimer
-
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt5.QtWidgets import QApplication, QMainWindow, QPlainTextEdit, QPushButton
+from PyQt5.QtCore import QTimer, QProcess
 from PyQt5.QtGui import QTextCursor
-from PyQt5.QtWidgets import (
-    QApplication,
-    QMainWindow,
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QPushButton,
-    QTextEdit,
-)
-
-
-class PingWorker(QThread):
-    pingOutput = pyqtSignal(str)
-
-    def __init__(self, parent=None):
-        super(PingWorker, self).__init__(parent)
-        self.ping_process = None
-        self.is_running = False
-
-    def start_ping(self, destination):
-        self.is_running = True
-        self.ping_process = subprocess.Popen(
-            f"ping -t {destination}", shell=True, stdout=subprocess.PIPE
-        )
-
-    def stop_ping(self):
-        self.is_running = False
-        if self.ping_process:
-            self.ping_process.kill()
-            self.ping_process = None
-
-    def run(self):
-        while self.is_running:
-            line = self.ping_process.stdout.readline().decode("cp1251").strip()
-            if line:
-                self.pingOutput.emit(line)
-            time.sleep(3)
-
+import datetime
+import time
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Ping Speed Test")
 
-        # UI elements
-        destination_label = QLabel("Destination:")
-        self.destination_input = QLineEdit()
-        duration_label = QLabel("Duration (seconds):")
-        self.duration_input = QLineEdit()
-        self.start_button = QPushButton("Start")
-        self.stop_button = QPushButton("Stop")
-        self.log_output = QTextEdit()
+        self.dest_address = "google.com"
+        self.ping_duration = 180 # seconds
+        self.ping_interval = 3 # seconds
 
-        # Connect buttons to slots
+        self.central_widget = QPlainTextEdit(self)
+        self.setCentralWidget(self.central_widget)
+
+        self.start_button = QPushButton("Start", self)
+        self.start_button.move(10, 10)
         self.start_button.clicked.connect(self.start_ping)
+
+        self.stop_button = QPushButton("Stop", self)
+        self.stop_button.move(100, 10)
         self.stop_button.clicked.connect(self.stop_ping)
+        self.stop_button.setDisabled(True)
 
-        # Layout
-        input_layout = QHBoxLayout()
-        input_layout.addWidget(destination_label)
-        input_layout.addWidget(self.destination_input)
-        input_layout.addWidget(duration_label)
-        input_layout.addWidget(self.duration_input)
-
-        button_layout = QHBoxLayout()
-        button_layout.addWidget(self.start_button)
-        button_layout.addWidget(self.stop_button)
-
-        main_layout = QVBoxLayout()
-        main_layout.addLayout(input_layout)
-        main_layout.addLayout(button_layout)
-        main_layout.addWidget(self.log_output)
-
-        widget = QWidget()
-        widget.setLayout(main_layout)
-        self.setCentralWidget(widget)
-
-        # Ping worker
-        self.ping_worker = PingWorker()
-        self.ping_worker.pingOutput.connect(self.log_output.append)
-        self.ping_worker.finished.connect(self.ping_worker.deleteLater)
-
-        # File output
-        self.file_output = None
+        self.process = QProcess(self)
+        self.process.readyReadStandardOutput.connect(self.on_stdout_ready)
+        self.process.readyReadStandardError.connect(self.on_stderr_ready)
+        self.process.finished.connect(self.on_finished)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.save_output)
+        self.is_running = False
+        self.output_file = None
 
     def start_ping(self):
-        # Start ping worker
-        destination = self.destination_input.text()
-        duration = int(self.duration_input.text())
-
-        self.ping_worker.start_ping(destination)
-        self.start_button.setEnabled(False)
-        self.stop_button.setEnabled(True)
-
-        # Start file output
-        timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-        filename = f"{destination}_{timestamp}.txt"
-        self.file_output = codecs.open(filename, "w", "cp1251")
-
-        # Stop file output after duration
-        QTimer.singleShot(duration * 1000, self.stop_file_output)
+        self.is_running = True
+        self.start_button.setDisabled(True)
+        self.stop_button.setDisabled(False)
+        self.output_file = open("ping_output.txt", "a", encoding="cp866")
+        self.write_output("PING {} started at {}\n".format(self.dest_address, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        self.process.start(f"ping -t {self.dest_address}")
+        self.timer.start(self.ping_interval * 1000)
 
     def stop_ping(self):
-        # Stop ping worker
-        self.ping_worker.stop_ping()
-        self.start_button.setEnabled(True)
-        self.stop_button.setEnabled(False)
+        self.is_running = False
+        self.start_button.setDisabled(False)
+        self.stop_button.setDisabled(True)
+        self.process.kill()
+        self.timer.stop()
+        if self.output_file:
+            self.write_output("PING {} stopped at {}\n".format(self.dest_address, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+            self.output_file.close()
 
-        # Stop file output
-        self.stop_file_output()
+    def save_output(self):
+        if self.output_file and self.process.state() == QProcess.Running:
+            cursor = self.central_widget.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            self.central_widget.setTextCursor(cursor)
+            output = self.central_widget.toPlainText()
+            self.output_file.write(output)
+            self.central_widget.clear()
 
-    def stop_file_output(self):
-        if self.file_output:
-            self.file_output.close()
-            self.file_output = None
+    def write_output(self, text):
+        self.central_widget.appendPlainText(text)
 
-    def closeEvent(self, event):
-        self.stop_ping()
-        event.accept()
+    def on_stdout_ready(self):
+        text = self.process.readAllStandardOutput().data().decode("cp866")
+        self.write_output(text)
 
+    def on_stderr_ready(self):
+        text = self.process.readAllStandardError().data().decode("cp866")
+        self.write_output(text)
 
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = MainWindow
+    def on_finished(self):
+        if self.is_running:
+            self.write_output("PING {} stopped at {}\n".format(self.dest_address, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+            self.start_ping()
+
+if __name__ == '__main__':
+    app = QApplication([])
+    window = MainWindow()
+    window.show()
+    app.exec_()
